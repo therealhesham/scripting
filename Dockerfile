@@ -22,7 +22,7 @@ RUN npm install
 COPY . .
 
 # فتح بورت 3000
-EXPOSE 3000
+EXPOSE 3172
 
 # أمر التشغيل الأساسي
 CMD [ "node", "server.js" ]
