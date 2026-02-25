@@ -4,12 +4,17 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const ExcelJS = require('exceljs');
+const multer = require('multer');
+
+// ============================================
+// إعداد Multer لاستلام الملفات من الـ Request
+// ============================================
+const upload = multer({ dest: 'uploads/' }); // حفظ الملفات المرسلة مؤقتاً في مجلد uploads
 
 const app = express();
 app.use(cors('*')); // السماح لكل النطاقات
 app.use(express.json());
 
-const EXCEL_FILE = path.join(__dirname, 'data.xlsx');
 const OUTPUT_DIR = path.join(__dirname, 'مخرجات_السيارات');
 const MAIN_TAB = 'قائمة المستثمرين';
 
@@ -61,20 +66,22 @@ const findInvestorSheet = (wb, investorName) => {
 };
 
 // ============================================
-// نقطة الـ API الأساسية لعملية الاستخراج
+// نقطة الـ API الأساسية لعملية الاستخراج مع استقبال الملف
 // ============================================
-app.post('/extracting', async (req, res) => {
+app.post('/extracting', upload.single('file'), async (req, res) => {
     try {
+        if (!req.file) {
+            return res.status(400).json({ status: 'error', message: 'لم يتم إرسال أي ملف. الرجاء إرسال الملف باسم الحقل "file".' });
+        }
+
+        const EXCEL_FILE = req.file.path; // المسار المؤقت للملف المرسل
+
         if (!fs.existsSync(OUTPUT_DIR)) {
             fs.mkdirSync(OUTPUT_DIR, { recursive: true });
         }
 
-        console.log('⏳ جاري قراءة ملف الإكسل لتحليل الجداول...');
+        console.log('⏳ جاري قراءة ملف الإكسل المرسل لتحليل الجداول...');
         const workbook = new ExcelJS.Workbook();
-
-        if (!fs.existsSync(EXCEL_FILE)) {
-            return res.status(400).json({ status: 'error', message: 'ملف data.xlsx غير موجود في المجلد.' });
-        }
 
         await workbook.xlsx.readFile(EXCEL_FILE);
 
@@ -274,6 +281,9 @@ app.post('/extracting', async (req, res) => {
                 if (fs.existsSync(job.tempXlsxPath)) fs.unlinkSync(job.tempXlsxPath);
             }
 
+            // 🧹 تنظيف الملف المؤقت المرسل بعد الانتهاء
+            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+
             res.status(200).json({
                 status: 'success',
                 message: `تم استخراج ${successCount} ملف PDF بنجاح من أصل ${printJobs.length}.`,
@@ -283,17 +293,19 @@ app.post('/extracting', async (req, res) => {
             });
         } catch (err) {
             console.error(err);
+            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
             res.status(500).json({ status: 'error', message: 'حدث خطأ أثناء تجهيز الملفات أو تشغيل LibreOffice لتصدير PDF.', error: err.message });
         }
 
     } catch (error) {
         console.error(error);
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         res.status(500).json({ status: 'error', message: 'خطأ داخلي في الخادم.', error: error.message });
     }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3172;
 app.listen(PORT, () => {
     console.log(`🚀 السيرفر يعمل الآن على http://localhost:${PORT}`);
-    console.log(`📡 يمكنك عمل طلب POST على http://localhost:${PORT}/extracting`);
+    console.log(`📡 يمكنك عمل طلب POST على http://localhost:${PORT}/extracting وإرفاق الملف كـ form-data تحت اسم (file)`);
 });
