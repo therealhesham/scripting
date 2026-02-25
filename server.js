@@ -5,6 +5,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
+const archiver = require('archiver');
 
 // ============================================
 // إعداد Multer لاستلام الملفات من الـ Request
@@ -15,7 +16,6 @@ const app = express();
 app.use(cors('*')); // السماح لكل النطاقات
 app.use(express.json());
 
-const OUTPUT_DIR = path.join(__dirname, 'مخرجات_السيارات');
 const MAIN_TAB = 'قائمة المستثمرين';
 
 // ============================================
@@ -75,12 +75,18 @@ app.post('/extracting', upload.single('file'), async (req, res) => {
         }
 
         const EXCEL_FILE = req.file.path; // المسار المؤقت للملف المرسل
+        const uniqueId = Date.now() + '_' + Math.floor(Math.random() * 10000);
+        const OUTPUT_DIR = path.join(__dirname, `output_${uniqueId}`);
+        const TMP_DIR = path.join(__dirname, `temp_${uniqueId}`);
 
         if (!fs.existsSync(OUTPUT_DIR)) {
             fs.mkdirSync(OUTPUT_DIR, { recursive: true });
         }
+        if (!fs.existsSync(TMP_DIR)) {
+            fs.mkdirSync(TMP_DIR, { recursive: true });
+        }
 
-        console.log('⏳ جاري قراءة ملف الإكسل المرسل لتحليل الجداول...');
+        console.log(`⏳ جاري قراءة ملف الإكسل المرسل لتحليل الجداول... (Request ID: ${uniqueId})`);
         const workbook = new ExcelJS.Workbook();
 
         await workbook.xlsx.readFile(EXCEL_FILE);
@@ -208,9 +214,6 @@ app.post('/extracting', upload.single('file'), async (req, res) => {
 
         console.log(`\n🚀 تم التعرف على ${printJobs.length} جدول. جاري معالجتها لتعمل على (Ubuntu / Linux) باستخدام LibreOffice...`);
 
-        const TMP_DIR = path.join(__dirname, 'temp_excel');
-        if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
-
         try {
             // 1. إنشاء ملف إكسل مؤقت لكل جدول لضمان قراءة LibreOffice له كجدول مستقل
             for (let i = 0; i < printJobs.length; i++) {
@@ -281,19 +284,41 @@ app.post('/extracting', upload.single('file'), async (req, res) => {
                 if (fs.existsSync(job.tempXlsxPath)) fs.unlinkSync(job.tempXlsxPath);
             }
 
-            // 🧹 تنظيف الملف المؤقت المرسل بعد الانتهاء
-            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+            // إرسال الملفات كملف مضغوط (ZIP) للاستجابة
+            res.setHeader('Content-Type', 'application/zip');
+            res.setHeader('Content-Disposition', 'attachment; filename="investor_pdfs.zip"');
 
-            res.status(200).json({
-                status: 'success',
-                message: `تم استخراج ${successCount} ملف PDF بنجاح من أصل ${printJobs.length}.`,
-                total_jobs: printJobs.length,
-                success_count: successCount,
-                output_dir: OUTPUT_DIR
+            const archive = archiver('zip', { zlib: { level: 9 } });
+
+            archive.on('warning', function (err) {
+                if (err.code === 'ENOENT') {
+                    console.warn(err);
+                } else {
+                    throw err;
+                }
             });
+
+            archive.on('error', function (err) {
+                throw err;
+            });
+
+            archive.pipe(res);
+            archive.directory(OUTPUT_DIR, false);
+            await archive.finalize();
+
+            // 🧹 تنظيف المجلدات بعدما يتم إرسال الرد
+            res.on('finish', () => {
+                if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+                fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
+                fs.rmSync(TMP_DIR, { recursive: true, force: true });
+                console.log(`✅ انتهت المهمة وتم مسح الملفات المؤقتة للطلب ${uniqueId}.`);
+            });
+
         } catch (err) {
             console.error(err);
             if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+            if (fs.existsSync(OUTPUT_DIR)) fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
+            if (fs.existsSync(TMP_DIR)) fs.rmSync(TMP_DIR, { recursive: true, force: true });
             res.status(500).json({ status: 'error', message: 'حدث خطأ أثناء تجهيز الملفات أو تشغيل LibreOffice لتصدير PDF.', error: err.message });
         }
 
