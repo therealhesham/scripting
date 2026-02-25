@@ -9,11 +9,20 @@ const multer = require('multer');
 // ============================================
 // إعداد Multer لاستلام الملفات من الـ Request
 // ============================================
-const upload = multer({ dest: 'uploads/' }); // حفظ الملفات المرسلة مؤقتاً في مجلد uploads
+const upload = multer({
+    dest: 'uploads/',
+    limits: {
+        fileSize: 50 * 1024 * 1024, // حد أقصى للحجم 50 ميجا
+        fieldSize: 50 * 1024 * 1024
+    }
+}); // حفظ الملفات المرسلة مؤقتاً في مجلد uploads
 
 const app = express();
 app.use(cors('*')); // السماح لكل النطاقات
-app.use(express.json());
+
+// نعطل express.json() العام أو نضعه بطريقة لا تتداخل مع الـ multipart/form-data
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // مجلد أساسي دائم للاحتفاظ بالملفات المخرجة على الـ VPS
 const FINAL_OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(__dirname, 'vps_extracted_files');
