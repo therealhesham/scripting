@@ -5,7 +5,6 @@ const path = require('path');
 const { execSync } = require('child_process');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
-const archiver = require('archiver');
 
 // ============================================
 // إعداد Multer لاستلام الملفات من الـ Request
@@ -15,6 +14,15 @@ const upload = multer({ dest: 'uploads/' }); // حفظ الملفات المرس
 const app = express();
 app.use(cors('*')); // السماح لكل النطاقات
 app.use(express.json());
+
+// مجلد أساسي دائم للاحتفاظ بالملفات المخرجة على الـ VPS
+const FINAL_OUTPUT_DIR = path.join(__dirname, 'vps_extracted_files');
+if (!fs.existsSync(FINAL_OUTPUT_DIR)) {
+    fs.mkdirSync(FINAL_OUTPUT_DIR, { recursive: true });
+}
+
+// عرض المجلد كـ Static Files لكي يمكن الوصول للملفات بروابط مباشرة
+app.use('/files', express.static(FINAL_OUTPUT_DIR));
 
 const MAIN_TAB = 'قائمة المستثمرين';
 
@@ -76,12 +84,8 @@ app.post('/extracting', upload.single('file'), async (req, res) => {
 
         const EXCEL_FILE = req.file.path; // المسار المؤقت للملف المرسل
         const uniqueId = Date.now() + '_' + Math.floor(Math.random() * 10000);
-        const OUTPUT_DIR = path.join(__dirname, `output_${uniqueId}`);
         const TMP_DIR = path.join(__dirname, `temp_${uniqueId}`);
 
-        if (!fs.existsSync(OUTPUT_DIR)) {
-            fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-        }
         if (!fs.existsSync(TMP_DIR)) {
             fs.mkdirSync(TMP_DIR, { recursive: true });
         }
@@ -176,17 +180,21 @@ app.post('/extracting', upload.single('file'), async (req, res) => {
                 }
 
                 const sanitizeName = (name) => name.replace(/[<>:"/\\|?*]+/g, '_').trim();
-                const investorFolder = path.join(OUTPUT_DIR, sanitizeName(investorName));
+                const investorFolderName = sanitizeName(investorName);
+                const investorFolder = path.join(FINAL_OUTPUT_DIR, investorFolderName);
 
                 if (!fs.existsSync(investorFolder)) {
                     fs.mkdirSync(investorFolder, { recursive: true });
                 }
 
-                const pdfFileName = path.join(investorFolder, `${sanitizeName(investorName)} - سيارة ${carIndex}.pdf`);
+                const pdfName = `${sanitizeName(investorName)} - سيارة ${carIndex}.pdf`;
+                const pdfFileName = path.join(investorFolder, pdfName);
 
                 printJobs.push({
                     sheetName: actualSheetName,
                     investorName: investorName,
+                    investorFolderName: investorFolderName,
+                    pdfName: pdfName,
                     startCol,
                     endCol,
                     lastRow,
@@ -272,52 +280,50 @@ app.post('/extracting', upload.single('file'), async (req, res) => {
                 }
             }
 
-            console.log(`\n� نقل ملفات الـ PDF إلى الفولدرات النهائية...`);
+            console.log(`\n🚚 نقل ملفات الـ PDF إلى الفولدرات النهائية...`);
             let successCount = 0;
+            const investorLinks = {};
+            const baseUrl = req.protocol + '://' + req.get('host') + '/files';
+
             for (let i = 0; i < printJobs.length; i++) {
                 const job = printJobs[i];
                 if (fs.existsSync(job.tempPdfPath)) {
-                    fs.renameSync(job.tempPdfPath, job.outputFile);
+                    // النقل والإحلال أو التحديث إذا كان الملف موجوداً
+                    fs.copyFileSync(job.tempPdfPath, job.outputFile);
                     successCount++;
+
+                    // تكوين الرابط المباشر
+                    if (!investorLinks[job.investorName]) {
+                        investorLinks[job.investorName] = [];
+                    }
+                    const encodedFolder = encodeURIComponent(job.investorFolderName);
+                    const encodedFile = encodeURIComponent(job.pdfName);
+                    investorLinks[job.investorName].push(`${baseUrl}/${encodedFolder}/${encodedFile}`);
                 }
-                // تنظيف الملف المُصدر
+
+                // تنظيف الملف المُصدر من مجلد temp
                 if (fs.existsSync(job.tempXlsxPath)) fs.unlinkSync(job.tempXlsxPath);
+                if (fs.existsSync(job.tempPdfPath)) fs.unlinkSync(job.tempPdfPath);
             }
 
-            // إرسال الملفات كملف مضغوط (ZIP) للاستجابة
-            res.setHeader('Content-Type', 'application/zip');
-            res.setHeader('Content-Disposition', 'attachment; filename="investor_pdfs.zip"');
-
-            const archive = archiver('zip', { zlib: { level: 9 } });
-
-            archive.on('warning', function (err) {
-                if (err.code === 'ENOENT') {
-                    console.warn(err);
-                } else {
-                    throw err;
-                }
-            });
-
-            archive.on('error', function (err) {
-                throw err;
-            });
-
-            archive.pipe(res);
-            archive.directory(OUTPUT_DIR, false);
-            await archive.finalize();
-
             // 🧹 تنظيف المجلدات بعدما يتم إرسال الرد
-            res.on('finish', () => {
-                if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-                fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
-                fs.rmSync(TMP_DIR, { recursive: true, force: true });
-                console.log(`✅ انتهت المهمة وتم مسح الملفات المؤقتة للطلب ${uniqueId}.`);
+            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+            if (fs.existsSync(TMP_DIR)) fs.rmSync(TMP_DIR, { recursive: true, force: true });
+
+            console.log(`✅ انتهت المهمة وتم مسح الملفات المؤقتة للطلب ${uniqueId}. ورفع الملفات لـ VPS.`);
+
+            // إرسال رد JSON يحتوي على الروابط فقط
+            res.status(200).json({
+                status: 'success',
+                message: `تم استخراج ${successCount} ملف PDF بنجاح من أصل ${printJobs.length}.`,
+                total_jobs: printJobs.length,
+                success_count: successCount,
+                investors_files: investorLinks
             });
 
         } catch (err) {
             console.error(err);
-            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-            if (fs.existsSync(OUTPUT_DIR)) fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
+            if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
             if (fs.existsSync(TMP_DIR)) fs.rmSync(TMP_DIR, { recursive: true, force: true });
             res.status(500).json({ status: 'error', message: 'حدث خطأ أثناء تجهيز الملفات أو تشغيل LibreOffice لتصدير PDF.', error: err.message });
         }
