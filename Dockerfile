@@ -21,7 +21,10 @@ RUN npm install
 # نسخ باقي ملفات المشروع
 COPY . .
 
-# فتح بورت 3000
+ENV OUTPUT_DIR=/app/data
+VOLUME ["/app/data"]
+
+# فتح بورت
 EXPOSE 3172
 
 # أمر التشغيل الأساسي

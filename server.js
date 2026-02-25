@@ -16,7 +16,7 @@ app.use(cors('*')); // السماح لكل النطاقات
 app.use(express.json());
 
 // مجلد أساسي دائم للاحتفاظ بالملفات المخرجة على الـ VPS
-const FINAL_OUTPUT_DIR = path.join(__dirname, 'vps_extracted_files');
+const FINAL_OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(__dirname, 'vps_extracted_files');
 if (!fs.existsSync(FINAL_OUTPUT_DIR)) {
     fs.mkdirSync(FINAL_OUTPUT_DIR, { recursive: true });
 }
